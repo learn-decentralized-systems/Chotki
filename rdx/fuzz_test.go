@@ -2,7 +2,7 @@ package rdx
 
 import (
 	"fmt"
-	"github.com/learn-decentralized-systems/toytlv"
+	"github.com/drpcorg/chotki/protocol"
 	"github.com/stretchr/testify/assert"
 	"math"
 	"strconv"
@@ -132,7 +132,7 @@ func FuzzTParse(f *testing.F) {
 func FuzzNtlv(f *testing.F) {
 	f.Fuzz(func(t *testing.T, u uint64) {
 		fact := Ntlv(u)
-		correct := toytlv.Record(Term, ZipUint64Pair(u, 0))
+		correct := protocol.Record(Term, ZipUint64Pair(u, 0))
 		assert.Equal(t, correct, fact)
 	})
 }
