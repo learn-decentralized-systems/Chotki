@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"github.com/cockroachdb/pebble"
 	"github.com/drpcorg/chotki/rdx"
-	"os"
+	"io"
 )
 
 func ChotkiKVString(key, value []byte) string {
@@ -20,14 +20,13 @@ func ChotkiKVString(key, value []byte) string {
 	return string(line)
 }
 
-func (cho *Chotki) DumpAll() {
-	_, _ = fmt.Fprintf(os.Stderr, "=====OBJECTS=====\n")
-	cho.DumpObjects()
-	_, _ = fmt.Fprintf(os.Stderr, "=====VVS=====\n")
-	cho.DumpVV()
+func (cho *Chotki) DumpAll(writer io.Writer) {
+	cho.DumpObjects(writer)
+	fmt.Fprintln(writer, "")
+	cho.DumpVV(writer)
 }
 
-func (cho *Chotki) DumpObjects() {
+func (cho *Chotki) DumpObjects(writer io.Writer) {
 	io := pebble.IterOptions{
 		LowerBound: []byte{'O'},
 		UpperBound: []byte{'P'},
@@ -35,11 +34,11 @@ func (cho *Chotki) DumpObjects() {
 	i := cho.db.NewIter(&io)
 	defer i.Close()
 	for i.SeekGE([]byte{'O'}); i.Valid(); i.Next() {
-		_, _ = fmt.Fprintln(os.Stderr, ChotkiKVString(i.Key(), i.Value()))
+		fmt.Fprintln(writer, ChotkiKVString(i.Key(), i.Value()))
 	}
 }
 
-func (cho *Chotki) DumpVV() {
+func (cho *Chotki) DumpVV(writer io.Writer) {
 	io := pebble.IterOptions{
 		LowerBound: []byte{'V'},
 		UpperBound: []byte{'W'},
@@ -50,12 +49,6 @@ func (cho *Chotki) DumpVV() {
 		id := rdx.IDFromBytes(i.Key()[1:])
 		vv := make(rdx.VV)
 		_ = vv.PutTLV(i.Value())
-		fmt.Printf("%s -> \t%s\n", id.String(), vv.String())
-	}
-}
-
-func DumpVPacket(vvs map[rdx.ID]rdx.VV) {
-	for id, vv := range vvs {
-		_, _ = fmt.Fprintf(os.Stderr, "%s -> %s\n", id.String(), vv.String())
+		fmt.Fprintln(writer, id.String(), " -> ", vv.String())
 	}
 }

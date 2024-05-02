@@ -1,17 +1,22 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/drpcorg/chotki"
+	"github.com/drpcorg/chotki/protocol"
 	"github.com/drpcorg/chotki/rdx"
-	"github.com/learn-decentralized-systems/toyqueue"
-	"github.com/learn-decentralized-systems/toytlv"
 )
+
+func replicaDirName(rno uint64) string {
+	return fmt.Sprintf("cho%x", rno)
+}
 
 var HelpCreate = errors.New("create zone/1 {Name:\"Name\",Description:\"long text\"}")
 
@@ -54,9 +59,9 @@ func (repl *REPL) CommandCreate(arg *rdx.RDX) (id rdx.ID, err error) {
 		return
 	}
 
-	dirname := chotki.ReplicaDirName(src.Src())
+	dirname := replicaDirName(src.Src())
 	repl.Host, err = chotki.Open(dirname, chotki.Options{
-		Orig:    src.Src(),
+		Src:     src.Src(),
 		Name:    name,
 		Options: pebble.Options{ErrorIfExists: true},
 	})
@@ -74,11 +79,11 @@ func (repl *REPL) CommandOpen(arg *rdx.RDX) (rdx.ID, error) {
 	}
 
 	src0 := rdx.IDFromText(arg.Text)
-	dirname := chotki.ReplicaDirName(src0.Src())
+	dirname := replicaDirName(src0.Src())
 
 	var err error
 	repl.Host, err = chotki.Open(dirname, chotki.Options{
-		Orig:    src0.Src(),
+		Src:     src0.Src(),
 		Options: pebble.Options{ErrorIfNotExists: true},
 	})
 	if err != nil {
@@ -88,6 +93,20 @@ func (repl *REPL) CommandOpen(arg *rdx.RDX) (rdx.ID, error) {
 	return repl.Host.Last(), nil
 }
 
+var HelpCheckpoint = errors.New("cp \"monday\"")
+
+func (repl *REPL) CommandCheckpoint(arg *rdx.RDX) (rdx.ID, error) {
+	if arg == nil || arg.RdxType != rdx.String {
+		return rdx.BadId, HelpCheckpoint
+	}
+	tlv := rdx.Sparse(string(arg.Text))
+	name := rdx.Snative(tlv)
+	parent := repl.Host.Directory()
+	path := filepath.Join(parent, name)
+	err := repl.Host.Database().Checkpoint(path)
+	return rdx.ID0, err
+}
+
 var HelpDump = errors.New("dump (obj|objects|vv|all)?")
 
 func (repl *REPL) CommandDump(arg *rdx.RDX) (id rdx.ID, err error) {
@@ -95,29 +114,27 @@ func (repl *REPL) CommandDump(arg *rdx.RDX) (id rdx.ID, err error) {
 		name := string(arg.Text)
 		switch name {
 		case "obj", "objects":
-			repl.Host.DumpObjects()
+			repl.Host.DumpObjects(os.Stderr)
 		case "vv":
-			repl.Host.DumpVV()
+			repl.Host.DumpVV(os.Stderr)
 		case "all":
-			repl.Host.DumpAll()
+			repl.Host.DumpAll(os.Stderr)
 		default:
 			return rdx.BadId, HelpDump
 		}
 	} else {
-		repl.Host.DumpAll()
+		repl.Host.DumpAll(os.Stderr)
 	}
 	return
 }
 
 func (repl *REPL) CommandClose(arg *rdx.RDX) (id rdx.ID, err error) {
-	if repl.tcp != nil {
-		repl.tcp.Close()
-		repl.tcp = nil
+	if repl.snap != nil {
+		_ = repl.snap.Close()
+		repl.snap = nil
 	}
+	id = repl.Host.Last()
 	err = repl.Host.Close()
-	if err == nil {
-		id = repl.Host.Last()
-	}
 	return
 }
 
@@ -167,10 +184,13 @@ func (repl *REPL) CommandNew(arg *rdx.RDX) (id rdx.ID, err error) {
 	id = rdx.BadId
 	err = HelpNew
 	tid := rdx.ID0
-	tlvs := toyqueue.Records{}
+	tlvs := protocol.Records{}
 	if arg == nil {
 		return
 	} else if arg.RdxType == rdx.Linear {
+		return
+	} else if arg.RdxType == rdx.Term {
+		// todo default object
 		return
 	} else if arg.RdxType == rdx.Mapping {
 		pairs := arg.Nested
@@ -183,7 +203,7 @@ func (repl *REPL) CommandNew(arg *rdx.RDX) (id rdx.ID, err error) {
 		if err != nil {
 			return
 		}
-		tmp := make(toyqueue.Records, len(fields))
+		tmp := make(protocol.Records, len(fields))
 
 		for i := 0; i+1 < len(pairs); i += 2 {
 			if pairs[i].RdxType != rdx.Term {
@@ -193,20 +213,25 @@ func (repl *REPL) CommandNew(arg *rdx.RDX) (id rdx.ID, err error) {
 			value := &pairs[i+1]
 			ndx := fields.Find(name) //fixme rdt
 			if ndx == -1 {
-				err = fmt.Errorf("unknown field %s", name)
+				err = fmt.Errorf("unknown field %s\n", name)
 				return
 			}
-			if value.RdxType != fields[ndx].RdxType {
-				err = fmt.Errorf("wrong type for %s", name)
+			fieldType := fields[ndx].RdxType
+			if value.RdxType != fieldType {
+				if value.RdxType == rdx.Integer && (fieldType == rdx.Natural || fieldType == rdx.ZCounter) {
+					value.RdxType = fieldType
+				} else {
+					err = fmt.Errorf("wrong type for %s\n", name)
+				}
 			}
 			tmp[ndx] = rdx.FIRSTrdx2tlv(value)
 		}
 		for i := 1; i < len(fields); i++ {
 			rdt := fields[i].RdxType
 			if tmp[i] == nil {
-				tlvs = append(tlvs, toytlv.Record(rdt, rdx.Xdefault(rdt)))
+				tlvs = append(tlvs, protocol.Record(rdt, rdx.Xdefault(rdt)))
 			} else {
-				tlvs = append(tlvs, toytlv.Record(rdt, tmp[i]))
+				tlvs = append(tlvs, protocol.Record(rdt, tmp[i]))
 			}
 		}
 	} else {
@@ -235,6 +260,49 @@ func (repl *REPL) CommandEdit(arg *rdx.RDX) (id rdx.ID, err error) {
 	} else { // todo
 		return
 	}
+}
+
+var HelpAdd = errors.New(
+	"add {b0b-1e-2: +3, a1ece-3f0-2: +7}",
+)
+
+func (repl *REPL) CommandAdd(arg *rdx.RDX) (id rdx.ID, err error) {
+	if arg.RdxType == rdx.Mapping {
+		pairs := arg.Nested
+		for i := 0; i+1 < len(pairs) && err == nil; i += 2 {
+			if pairs[i].RdxType != rdx.Reference || pairs[i+1].RdxType != rdx.Integer {
+				return rdx.BadId, HelpAdd
+			}
+			fid := rdx.IDFromText(pairs[i].Text)
+			var add uint64
+			_, err = fmt.Sscanf(string(pairs[i+1].Text), "%d", &add)
+			if fid.Off() == 0 || err != nil {
+				return
+			}
+			id, err = repl.Host.AddToNField(fid, add)
+		}
+
+	} else {
+		return rdx.BadId, HelpAdd
+	}
+	return
+}
+
+var HelpInc = errors.New(
+	"inc b0b-1e-2",
+)
+
+func (repl *REPL) CommandInc(arg *rdx.RDX) (id rdx.ID, err error) {
+	id = rdx.BadId
+	err = HelpInc
+	if arg.RdxType == rdx.Reference {
+		fid := rdx.IDFromText(arg.Text)
+		if id.Off() == 0 {
+			return
+		}
+		id, err = repl.Host.IncNField(fid)
+	}
+	return
 }
 
 var HelpList = errors.New(
@@ -320,11 +388,7 @@ func (repl *REPL) CommandListen(arg *rdx.RDX) (id rdx.ID, err error) {
 	}
 	addr := rdx.Snative(rdx.Sparse(string(arg.Text)))
 	if err == nil {
-		if repl.tcp == nil {
-			repl.tcp = &toytlv.TCPDepot{}
-			repl.Host.OpenTCP(repl.tcp)
-		}
-		err = repl.tcp.Listen(addr)
+		err = repl.Host.Listen(context.Background(), addr)
 	}
 	return
 }
@@ -337,11 +401,7 @@ func (repl *REPL) CommandConnect(arg *rdx.RDX) (id rdx.ID, err error) {
 	}
 	addr := rdx.Snative(rdx.Sparse(string(arg.Text)))
 	if err == nil {
-		if repl.tcp == nil {
-			repl.tcp = &toytlv.TCPDepot{}
-			repl.Host.OpenTCP(repl.tcp)
-		}
-		err = repl.tcp.Connect(addr)
+		err = repl.Host.Connect(context.Background(), addr)
 	}
 	return
 }
@@ -367,7 +427,7 @@ func (repl *REPL) CommandPing(arg *rdx.RDX) (id rdx.ID, err error) {
 	}
 	fmt.Printf("pinging through %s (field %s, previously %s)\n",
 		fid.String(), form[off].Name, rdx.Snative(fact[off]))
-	id, err = repl.Host.SetFieldTLV(fid, toytlv.Record('S', rdx.Stlv("ping")))
+	id, err = repl.Host.SetFieldTLV(fid, protocol.Record('S', rdx.Stlv("ping")))
 	return
 }
 
@@ -383,9 +443,9 @@ func KeepOddEven(oddeven uint64, cho *chotki.Chotki, fid rdx.ID) error {
 	mine := rdx.Nmine(tlv, src)
 	sum := rdx.Nnative(tlv)
 	if (sum & 1) != oddeven {
-		tlvs := toyqueue.Records{
-			toytlv.Record('F', rdx.ZipUint64(fid.Off())),
-			toytlv.Record(rdx.Natural, toytlv.Record(rdx.Term, rdx.ZipUint64Pair(mine+1, src))),
+		tlvs := protocol.Records{
+			protocol.Record('F', rdx.ZipUint64(fid.Off())),
+			protocol.Record(rdx.Natural, protocol.Record(rdx.Term, rdx.ZipUint64Pair(mine+1, src))),
 		}
 		_, err = cho.CommitPacket('E', fid.ZeroOff(), tlvs)
 	}
@@ -508,9 +568,9 @@ func (repl *REPL) doSinc(fid rdx.ID, delay time.Duration, count int64, mine uint
 	til := rdx.ID0
 	for c := count; c > 0 && err == nil; c-- {
 		mine++
-		tlvs := toyqueue.Records{
-			toytlv.Record('F', rdx.ZipUint64(fid.Off())),
-			toytlv.Record(rdx.Natural, toytlv.Record(rdx.Term, rdx.ZipUint64Pair(mine, src))),
+		tlvs := protocol.Records{
+			protocol.Record('F', rdx.ZipUint64(fid.Off())),
+			protocol.Record(rdx.Natural, protocol.Record(rdx.Term, rdx.ZipUint64Pair(mine, src))),
 		}
 		til, err = repl.Host.CommitPacket('E', fid.ZeroOff(), tlvs)
 		if delay > time.Duration(0) {
@@ -592,21 +652,21 @@ var HelpName = errors.New("name, name Obj, name {Obj: b0b-12-1}")
 func (repl *REPL) CommandName(arg *rdx.RDX) (id rdx.ID, err error) {
 	id = rdx.BadId
 	var names rdx.MapTR
-	names, err = repl.Host.ObjectFieldMapTermId(chotki.NamesID)
+	names, err = repl.Host.ObjectFieldMapTermId(chotki.IdNames)
 	if err != nil {
 		return
 	}
 	if arg == nil || arg.RdxType == rdx.None {
 		fmt.Println(names.String())
-		id = chotki.ID2
+		id = repl.Host.Last()
 	} else if arg.RdxType == rdx.Term {
 		key := string(arg.Text)
 		fmt.Printf("{%s:%s}\n", key, names[key])
 	} else if arg.RdxType == rdx.Mapping {
-		_, tlv, _ := repl.Host.ObjectFieldTLV(chotki.NamesID)
+		_, tlv, _ := repl.Host.ObjectFieldTLV(chotki.IdNames)
 		parsed := rdx.MparseTR(arg)
-		delta := toytlv.Record('M', rdx.MdeltaTR(tlv, parsed))
-		id, err = repl.Host.EditFieldTLV(chotki.NamesID, delta)
+		delta := protocol.Record('M', rdx.MdeltaTR(tlv, parsed, repl.Host.Clock()))
+		id, err = repl.Host.EditFieldTLV(chotki.IdNames, delta)
 	} else {
 		err = HelpName
 	}
@@ -634,17 +694,31 @@ func (repl *REPL) CommandValid(arg *rdx.RDX) (id rdx.ID, err error) {
 	return rdx.ID0, nil
 }
 
-var HelpCompile = errors.New("compile ClassName, compile b0b-2")
+var HelpCompile = errors.New("choc ClassName, choc b0b-2, choc {ClassName:b0b-2}")
 
 func (repl *REPL) CommandCompile(arg *rdx.RDX) (id rdx.ID, err error) {
-	err = HelpTell
-	id = rdx.BadId
+	id = rdx.ID0
 	var code string
+	orm := repl.Host.ObjectMapper()
 	if arg == nil {
-		return
+		return rdx.BadId, HelpCompile
 	} else if arg.RdxType == rdx.Reference {
 		id = rdx.IDFromText(arg.Text)
-		code, err = repl.Host.CompileClass("SomeClass", id)
+		code, err = orm.Compile("SomeClass", id)
+		//repl.Host.CompileClass("SomeClass", id)
+	} else if arg.RdxType == rdx.Mapping {
+		m := arg.Nested
+		for i := 0; i+1 < len(m) && err == nil; i += 2 {
+			name := &m[i]
+			cidx := &m[i+1]
+			if name.RdxType != rdx.Term || cidx.RdxType != rdx.Reference {
+				return rdx.BadId, HelpCompile
+			}
+			cid := rdx.IDFromText(cidx.Text)
+			c := ""
+			c, err = orm.Compile(string(name.Text), cid)
+			code = code + c
+		}
 	} else {
 		return
 	}

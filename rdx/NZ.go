@@ -3,7 +3,7 @@ package rdx
 import (
 	"bytes"
 	"fmt"
-	"github.com/learn-decentralized-systems/toytlv"
+	"github.com/drpcorg/chotki/protocol"
 )
 
 // N is an increment-only uint64 counter
@@ -24,17 +24,19 @@ func Nparse(txt string) (tlv []byte) {
 
 // convert a native golang value into TLV
 func Ntlv(u uint64) (tlv []byte) {
-	return toytlv.Record(Term, ZipUint64Pair(u, 0))
+	time := ZipUint64Pair(u, 0)
+	return protocol.Record(Term, protocol.TinyRecord('T', time))
+}
+
+func Ntlvt(inc uint64, src uint64) []byte {
+	return protocol.Record(Term, protocol.TinyRecord('T', ZipUint64Pair(inc, src)))
 }
 
 // convert a TLV value to a native golang value
 func Nnative(tlv []byte) (sum uint64) {
-	rest := tlv
-	for len(rest) > 0 {
-		var one []byte
-		one, rest = toytlv.Take(Term, rest)
-		inc, _ := UnzipUint64Pair(one)
-		sum += inc
+	it := FIRSTIterator{TLV: tlv}
+	for it.Next() {
+		sum += it.revz
 	}
 	return
 }
@@ -43,7 +45,7 @@ func Nnative(tlv []byte) (sum uint64) {
 func Nmerge(tlvs [][]byte) (merged []byte) {
 	ih := ItHeap[*NIterator]{}
 	for _, tlv := range tlvs {
-		ih.Push(&NIterator{tlv: tlv})
+		ih.Push(&NIterator{FIRSTIterator{TLV: tlv}})
 	}
 	for ih.Len() > 0 {
 		merged = append(merged, ih.Next()...)
@@ -55,11 +57,11 @@ func N2string(tlv []byte, new_val string, src uint64) (tlv_delta []byte) {
 	if len(new_val) == 0 {
 		return nil
 	}
-	it := NIterator{tlv: tlv}
+	it := NIterator{FIRSTIterator{TLV: tlv}}
 	mine := uint64(0)
 	for it.Next() {
 		if it.src == src {
-			mine = it.inc
+			mine = it.revz
 			break
 		}
 	}
@@ -85,15 +87,30 @@ func N2string(tlv []byte, new_val string, src uint64) (tlv_delta []byte) {
 	return ZipUint64Pair(mine, 0)
 }
 
+// FIXME clock
 // produce an op that turns the old value into the new one
-func Ndelta(tlv []byte, new_val uint64) (tlv_delta []byte) {
-	sum := Nnative(tlv)
+func Ndelta(tlv []byte, new_val uint64, clock Clock) (tlv_delta []byte) {
+	it := FIRSTIterator{TLV: tlv}
+	max_revz := uint64(0)
+	mysrc := clock.Src()
+	old_val := uint64(0)
+	sum := uint64(0)
+	for it.Next() {
+		if it.revz > max_revz {
+			max_revz = it.revz
+		}
+		val := UnzipUint64(it.val)
+		if it.src == mysrc {
+			old_val = val
+		}
+		sum += val
+	}
 	if new_val < sum {
 		return nil
 	} else if new_val == sum {
 		return []byte{}
 	}
-	return Ntlv(new_val - sum)
+	return Ntlv(new_val - sum + old_val)
 }
 
 // checks a TLV value for validity (format violations)
@@ -106,38 +123,23 @@ func Ndiff(tlv []byte, vvdiff VV) []byte {
 }
 
 func Nmine(tlv []byte, src uint64) uint64 {
-	it := NIterator{tlv: tlv}
+	it := NIterator{FIRSTIterator{TLV: tlv}}
 	for it.Next() {
 		if it.src == src {
-			return it.inc
+			return it.revz
 		}
 	}
 	return 0
 }
 
 type NIterator struct {
-	one []byte
-	tlv []byte
-	src uint64
-	inc uint64
-}
-
-func (a *NIterator) Next() bool {
-	if len(a.tlv) == 0 {
-		return false
-	}
-	_, hlen, blen := toytlv.ProbeHeader(a.tlv)
-	rlen := hlen + blen
-	a.inc, a.src = UnzipUint64Pair(a.tlv[hlen:rlen])
-	a.one = a.tlv[:rlen]
-	a.tlv = a.tlv[rlen:]
-	return true
+	FIRSTIterator
 }
 
 func (a *NIterator) Merge(b SortedIterator) int {
 	bb := b.(*NIterator)
 	if a.src == bb.src {
-		if a.inc < bb.inc {
+		if a.revz < bb.revz {
 			return MergeB
 		} else {
 			return MergeA
@@ -169,8 +171,8 @@ func Zparse(txt string) (tlv []byte) {
 
 // convert a native golang value into TLV
 func Ztlv(i int64) (tlv []byte) {
-	return toytlv.Record('I',
-		toytlv.TinyRecord('T', ZipIntUint64Pair(0, 0)),
+	return protocol.Record('I',
+		protocol.TinyRecord('T', ZipIntUint64Pair(0, 0)),
 		ZipInt64(i),
 	)
 }
@@ -180,8 +182,8 @@ func Znative(tlv []byte) (sum int64) {
 	rest := tlv
 	for len(rest) > 0 {
 		var one []byte
-		one, rest = toytlv.Take('I', rest)
-		_, body := toytlv.Take('T', one)
+		one, rest = protocol.Take('I', rest)
+		_, body := protocol.Take('T', one)
 		inc := UnzipInt64(body)
 		sum += inc
 	}
@@ -201,7 +203,7 @@ func Zmerge(tlvs [][]byte) (merged []byte) {
 }
 
 // produce an op that turns the old value into the new one
-func Zdelta(tlv []byte, new_val int64) (tlv_delta []byte) {
+func Zdelta(tlv []byte, new_val int64, clock Clock) (tlv_delta []byte) {
 	sum := Znative(tlv)
 	if new_val == sum {
 		return []byte{}

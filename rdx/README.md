@@ -10,7 +10,7 @@ offline-first and peer-to-peer replication, with no central
 server required, as any two *replicas* can merge their data. By
 installing RDX data types as merge operators in an LSM database
 (leveldb, RocksDB, pebble, Cassandra, etc) one can effectively
-have a CRDT database (which [Chotki][c] basically is).
+have a CRDT database (which [Chotki](./ARCHITECTURE.md) basically is).
 
 We will implement *unified* CRDTs able to synchronize using
 operations, full states or deltas. Types may imply [causal
@@ -31,7 +31,7 @@ Our objects can have fields of the following CRDT types. Each
 type is named by a letter. 
 
  1. last-write-wins variables (`I` for int64, `S` for string, `F`
-    is float64, and `R` is [id64][i])
+    is float64, and `R` is [id64](./rdx/id.go#12))
  2. counters, `N` increment-only uint64 and `Z` two-way int64
  3. maps (M), like key-value maps, where keys and values are `FIRST`
  4. sets (E), contain arbitrary `FIRST` elements
@@ -41,7 +41,7 @@ type is named by a letter.
 
 The format and the merge rules are as follows.
 
-### `FIRST`
+### `FIRST` Float, Integer, Reference, String, Term
 
 The last-write-wins register is the simplest data type to
 implement. For each LWW field, we only need the latest "winner"
@@ -52,13 +52,13 @@ let's see how a bare (no TLV envelope) `I` int64 `-11` would
 look like, assuming it is the 4th revision of the register
 autored by replica #5. The TLV would look like: `32 08 05 15`
 (hex) where `0x15` is a [zig-zag][g] encoded and zipped `-11`,
-while `32 08 05` is a tiny [ToyTLV][t] record for a zipped pair
+while `32 08 05` is a tiny [ToyTLV](./protocol/tlv.go) record for a zipped pair
 of ints, 4 (signed, zig-zagged, so `08`) and 5 (unsigned, so
 `05`). If we add a ToyTLV envelope, that becomes `69 04 32 08 05
 15` (type of record `I`, length 4, then the bare part).
 
 String `S` values are simply UTF-8 strings. Int64 `I`, float64
-`F` and id64 `R` values get compressed using [`zip_int`][z]
+`F` and id64 `R` values get compressed using [`zip_int`](./rdx/zipint.go)
 routines. Overlong encodings are forbidden both for strings and
 for zip-ints! 
 
@@ -80,7 +80,7 @@ Merge rules for LWW are straighforward:
  2. in case of a tie, higher value wins (like bytes.Compare())
  3. in case of a tie, who cares, but higher replica id wins
 
-### `NZ`
+### `NZ` Counters
 
 `N` are increment-only counters. Their TLV state is a sequence
 of `T` records containing zipped uint64 pairs {val,src}, the
@@ -96,7 +96,7 @@ described in the `FIRST` section. One record corresponds to one
 source, per-source merge rules are same as LWW. The native value
 is the sum of all `I` values.
 
-### `E`
+### `E` Eulerian
 
 Generic sets containing any `FIRST` elements. The TLV format is
 a sequence of enveloped FIRST records. It can contain records
@@ -118,7 +118,7 @@ like [mergesort][m] works.
 The string value for a set is like `{1,2,3}` where `1,2,3` are
 `FIRST` elements of the set.
 
-### `M`
+### `M` Mapping
 
 Generic maps, mapping any `FIRST` value to any other `FIRST`
 value. The TLV format is a sequence of enveloped key-value op
@@ -134,7 +134,7 @@ and the value ops are merged according to the LWW rules. As with
 
 The string value for a map is like `{4:null, "key":"value"}`
 
-### `L`
+### `L` Linear
 
 Generic arrays store any `FIRST` elements. Internally, `L` are
 Causal Trees (also known as Replicated Growable Arrays, RGAs).
@@ -222,7 +222,7 @@ here we imply `I` last-write-wins int64.
 
 ##  Serialization format
 
-We use the [ToyTLV][t] format for enveloping/nesting all data.
+We use the [ToyTLV](./protocol/tlv.go) format for enveloping/nesting all data.
 That is a bare-bones type-length-value format with zero
 semantics. What we put into ToyTLV envelopes is integers,
 strings, and floats. Strings are UTF-8, no surprises. Floats are
@@ -231,7 +231,7 @@ as a compressed pair of integers.
 
 A note on integer compression. From the fact that protobuf
 has about ten integer types, one can guess that things can
-be complicated here. We use [ZipInt][z] routines to produce
+be complicated here. We use [ZipInt](./rdx/zipint.go) routines to produce
 efficient varints in a TLV format (differently from protobuf
 which has a separate bit-level [LEB128][b] coding for ints). 
 
@@ -245,15 +245,11 @@ which has a separate bit-level [LEB128][b] coding for ints).
 id64 and logical timestamps get packed as pairs of uint64s. All
 zip codings are little-endian.
 
-[c]: https://github.com/learn-decentralized-systems/Chotki/blob/main/ARCHITECTURE.md
 [x]: https://en.wikipedia.org/wiki/Causal_consistency
 [v]: https://en.wikipedia.org/wiki/Version_vector
 [r]: https://www.educative.io/answers/how-are-vector-clocks-used-in-dynamo
 [j]: https://en.wikipedia.org/wiki/RDX
 [p]: https://en.wikipedia.org/wiki/Remote_procedure_call
-[z]: https://github.com/learn-decentralized-systems/Chotki/blob/main/zipint.go
 [g]: https://protobuf.dev/programming-guides/encoding/
-[t]: https://github.com/learn-decentralized-systems/toytlv
 [b]: https://en.wikipedia.org/wiki/LEB128
-[i]: https://github.com/learn-decentralized-systems/Chotki/blob/main/id.go#L12
 [m]: https://en.wikipedia.org/wiki/Merge_sort

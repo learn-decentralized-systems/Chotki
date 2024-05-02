@@ -1,43 +1,45 @@
 package rdx
 
 import (
-	"github.com/learn-decentralized-systems/toytlv"
-	"github.com/stretchr/testify/assert"
 	"testing"
+
+	tlv "github.com/drpcorg/chotki/protocol"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestNtlv(t *testing.T) {
 	fact := Ntlv(123)
-	correct := toytlv.Record(Term, ZipUint64Pair(123, 0))
+	correct := Ntlvt(123, 0)
 	assert.Equal(t, correct, fact)
 	str := Nstring(fact)
 	assert.Equal(t, "123", str)
-	inc := Ndelta(fact, 124)
-	assert.Equal(t, uint64(1), Nnative(inc))
+	clock := LocalLogicalClock{}
+	inc := Ndelta(fact, 124, &clock)
+	assert.Equal(t, uint64(124), Nnative(inc))
 	// todo diff
 }
 
 func TestNmerge(t *testing.T) {
-	one := toytlv.Concat(
-		toytlv.Record(Term, ZipUint64Pair(1, 1)),
-		toytlv.Record(Term, ZipUint64Pair(2, 2)),
-		toytlv.Record(Term, ZipUint64Pair(3, 3)),
+	one := tlv.Concat(
+		Ntlvt(1, 1),
+		Ntlvt(2, 2),
+		Ntlvt(3, 3),
 	)
 	assert.Equal(t, uint64(6), Nnative(one))
-	two := toytlv.Concat(
-		toytlv.Record(Term, ZipUint64Pair(3, 2)),
-		toytlv.Record(Term, ZipUint64Pair(3, 3)),
-		toytlv.Record(Term, ZipUint64Pair(4, 4)),
+	two := tlv.Concat(
+		Ntlvt(3, 2),
+		Ntlvt(3, 3),
+		Ntlvt(4, 4),
 	)
 	assert.Equal(t, uint64(10), Nnative(two))
 
 	three := Nmerge([][]byte{one, two})
 
-	correct := toytlv.Concat(
-		toytlv.Record(Term, ZipUint64Pair(1, 1)),
-		toytlv.Record(Term, ZipUint64Pair(3, 2)),
-		toytlv.Record(Term, ZipUint64Pair(3, 3)),
-		toytlv.Record(Term, ZipUint64Pair(4, 4)),
+	correct := tlv.Concat(
+		Ntlvt(1, 1),
+		Ntlvt(3, 2),
+		Ntlvt(3, 3),
+		Ntlvt(4, 4),
 	)
 
 	assert.Equal(t, correct, three)
@@ -50,19 +52,20 @@ func TestZtlv(t *testing.T) {
 	assert.Equal(t, correct, fact)
 	str := Zstring(fact)
 	assert.Equal(t, "123", str)
-	inc := Zdelta(fact, 124)
+	clock := LocalLogicalClock{}
+	inc := Zdelta(fact, 124, &clock)
 	assert.Equal(t, int64(1), Znative(inc))
 	// todo diff
 }
 
 func TestZmerge(t *testing.T) {
-	one := toytlv.Concat(
+	one := tlv.Concat(
 		Itlve(1, 1, 1),
 		Itlve(2, 2, 2),
 		Itlve(3, 3, 3),
 	)
 	assert.Equal(t, int64(6), Znative(one))
-	two := toytlv.Concat(
+	two := tlv.Concat(
 		Itlve(3, 2, 3),
 		Itlve(3, 3, 3),
 		Itlve(4, 4, 4),
@@ -71,7 +74,7 @@ func TestZmerge(t *testing.T) {
 
 	three := Zmerge([][]byte{one, two})
 
-	correct := toytlv.Concat(
+	correct := tlv.Concat(
 		Itlve(1, 1, 1),
 		Itlve(2, 2, 2),
 		Itlve(3, 2, 3),
