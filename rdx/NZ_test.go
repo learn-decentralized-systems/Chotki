@@ -73,11 +73,12 @@ func TestZmerge(t *testing.T) {
 
 	correct := toytlv.Concat(
 		Itlve(1, 1, 1),
+		Itlve(2, 2, 2),
 		Itlve(3, 2, 3),
 		Itlve(3, 3, 3),
 		Itlve(4, 4, 4),
 	)
-	assert.Equal(t, int64(11), Znative(correct))
+	assert.Equal(t, int64(13), Znative(correct))
 
 	assert.Equal(t, correct, three)
 
