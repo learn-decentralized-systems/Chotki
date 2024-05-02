@@ -1,6 +1,7 @@
 package rdx
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/drpcorg/chotki/protocol"
 )
@@ -225,15 +226,16 @@ type ZIterator struct {
 
 func (a *ZIterator) Merge(b SortedIterator) int {
 	bb := b.(*ZIterator)
-	if a.src == bb.src {
-		if a.revz < bb.revz {
-			return MergeB
-		} else {
+	if a.revz < bb.revz {
+		return MergeAB
+	}
+	if a.revz == bb.revz {
+		valtie := bytes.Compare(a.val, bb.val)
+		if valtie == -1 || valtie == 0 && a.src < bb.src {
+			return MergeAB
+		} else if valtie == 0 && a.src == bb.src {
 			return MergeA
 		}
-	} else if a.src < bb.src {
-		return MergeAB
-	} else {
-		return MergeBA
 	}
+	return MergeBA
 }

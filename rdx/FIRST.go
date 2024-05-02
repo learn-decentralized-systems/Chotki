@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/drpcorg/chotki/protocol"
 )
@@ -236,8 +237,7 @@ func Istring(tlv []byte) (txt string) {
 
 // parse a text form into a TLV value
 func Iparse(txt string) (tlv []byte) {
-	var i int64
-	_, _ = fmt.Sscanf(txt, "%d", &i)
+	i, _ := strconv.ParseInt(txt, 10, 64)
 	return Itlv(i)
 }
 
@@ -438,8 +438,7 @@ func Fstring(tlv []byte) (txt string) {
 
 // parse a text form into a TLV value
 func Fparse(txt string) (tlv []byte) {
-	var i float64
-	_, _ = fmt.Sscanf(txt, "%f", &i)
+	i, _ := strconv.ParseFloat(txt, 64)
 	return Ftlv(i)
 }
 
@@ -482,7 +481,7 @@ func Fdiff(tlv []byte, vvdiff VV) []byte {
 	return DiffFIRST(tlv, vvdiff)
 }
 
-// I is a last-write-wins int64
+// // T is a null type
 
 // produce a text form (for REPL mostly)
 func Tstring(tlv []byte) (txt string) {
